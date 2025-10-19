@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ============================================================================
-# dntcry - Fidye Yazılımı Koruma Sistemi
-# WannaCry benzeri tehditlere karşı proaktif savunma
-# Systemd Servisi ile 7/24 İzleme
+# dntcry - Geliştirilmiş Fidye Yazılımı Koruma Sistemi
+# WannaCry benzeri kripto-kilitworm atakları gegen
+# Ana Modul - Tüm Algılama ve Savunma Mekanizmaları
 # ============================================================================
 
 set -e
@@ -17,275 +17,295 @@ CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 NC='\033[0m'
 
-# Değişkenler
-INSTALL_DIR="/usr/local/bin"
-SERVICE_DIR="/etc/systemd/system"
-CONFIG_DIR="/etc/dntcry"
+# ============================================================================
+# KONFIGÜRASYON
+# ============================================================================
+
+CONFIG_FILE="/etc/dntcry/dntcry.conf"
 LOG_DIR="/var/log/dntcry"
 DATA_DIR="/var/lib/dntcry"
-VERSION="1.0"
+QUARANTINE_DIR="$DATA_DIR/quarantine"
 
-# Konfigürasyon değerleri
-EXCLUDED_DIRS=("/proc" "/sys" "/dev" "/run" "/boot" "/snap" "/usr" "/bin" "/sbin" "/lib")
-SUSPICIOUS_EXTENSIONS=(".exe" ".dll" ".scr" ".bat" ".cmd" ".com" ".vbs" ".js" ".ps1" ".reg")
-SUSPICIOUS_DIRS=("$HOME/Desktop" "$HOME/Documents" "/tmp" "/var/tmp" "$HOME/Downloads")
-MAX_BATCH_EXTENSIONS_CHANGE=5
-MONITOR_INTERVAL=60
+# Varsayılan değerler
+MONITOR_INTERVAL=${MONITOR_INTERVAL:-10}
+MAX_BATCH_EXTENSIONS_CHANGE=${MAX_BATCH_EXTENSIONS_CHANGE:-3}
+BATCH_DETECTION_WINDOW=${BATCH_DETECTION_WINDOW:-120}
+THREAT_ACTION=${THREAT_ACTION:-quarantine}
+ENABLE_NETWORK_MONITOR=${ENABLE_NETWORK_MONITOR:-true}
+ENABLE_PROCESS_MONITOR=${ENABLE_PROCESS_MONITOR:-true}
+ENABLE_IO_MONITOR=${ENABLE_IO_MONITOR:-true}
+ENABLE_MEMORY_SCAN=${ENABLE_MEMORY_SCAN:-true}
+ENABLE_FILE_WATCH=${ENABLE_FILE_WATCH:-true}
+ENABLE_RANSOMWARE_DETECTION=${ENABLE_RANSOMWARE_DETECTION:-true}
+
+# İzlenen dizinler
+MONITORED_DIRS=("/root" "/home" "/var/www" "/opt" "/srv")
+CRITICAL_DIRS=("/home" "/var/www" "/data")
+EXCLUDED_DIRS=("/proc" "/sys" "/dev" "/run" "/boot" "/snap" "/usr" "/bin" "/sbin" "/lib" "/var/log")
+
+# Şüpheli uzantılar
+SUSPICIOUS_EXTENSIONS=(".exe" ".dll" ".scr" ".bat" ".cmd" ".com" ".vbs" ".js" ".ps1" ".reg" ".zip" ".rar" ".7z" ".wncry" ".wcry")
+RANSOMWARE_EXTENSIONS=(".wncry" ".wcry" ".encrypted" ".locked" ".crypto" ".crypt" ".locked2017" ".pzdc" ".pte")
+
+# Şüpheli işlemler
+SUSPICIOUS_PROCESSES=("wannacry" "wcry" "onion" "taskkill" "wmic" "psexec" "EternalBlue" "ms17-010" "eternal" "tasksched" "svchost.exe" "lsass.exe")
+
+# Şüpheli port'lar
+SUSPICIOUS_PORTS=(139 445 3389 5000 5985 5986)
 
 # ============================================================================
-# TEMEL FONKSİYONLAR
+# LOGLAMA FONKSİYONLARI
 # ============================================================================
+
+log_init() {
+    mkdir -p "$LOG_DIR" "$QUARANTINE_DIR"
+    chmod 700 "$LOG_DIR" "$DATA_DIR"
+}
 
 log_info() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $1" | tee -a "$LOG_DIR/dntcry.log"
+    local msg="$1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [INFO] $msg" | tee -a "$LOG_DIR/dntcry.log"
 }
 
 log_warning() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [WARNING] $1" | tee -a "$LOG_DIR/dntcry.log"
+    local msg="$1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [WARNING] $msg" | tee -a "$LOG_DIR/dntcry.log"
 }
 
 log_error() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $1" | tee -a "$LOG_DIR/dntcry.log"
+    local msg="$1"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ERROR] $msg" | tee -a "$LOG_DIR/dntcry.log"
 }
 
 log_threat() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [THREAT DETECTED] $1" | tee -a "$LOG_DIR/threats.log"
+    local msg="$1"
+    local severity="$2"
+    severity=${severity:-"MEDIUM"}
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [THREAT - $severity] $msg" | tee -a "$LOG_DIR/threats.log"
 }
 
-create_directories() {
-    mkdir -p "$CONFIG_DIR" "$LOG_DIR" "$DATA_DIR"
-    chmod 755 "$CONFIG_DIR" "$LOG_DIR" "$DATA_DIR"
-}
-
-# ============================================================================
-# KONFİGÜRASYON YÖNETİMİ
-# ============================================================================
-
-create_default_config() {
-    cat > "$CONFIG_DIR/dntcry.conf" << 'CONFIG_EOF'
-# dntcry Yapılandırma Dosyası
-# WannaCry benzeri fidye yazılımlarına karşı koruma
-
-# İzleme Aralığı (saniye)
-MONITOR_INTERVAL=60
-
-# Hızlı Dosya Değiştirme Algılama
-ENABLE_BATCH_DETECTION=true
-MAX_BATCH_EXTENSIONS_CHANGE=5
-BATCH_DETECTION_WINDOW=300
-
-# Şüpheli Dosya Uzantıları
-SUSPICIOUS_EXTENSIONS=(.exe .dll .scr .bat .cmd .com .vbs .js .ps1 .reg .zip .rar .7z)
-
-# İzlenen Dizinler (virgülle ayrılmış)
-MONITORED_DIRS=/root,/home,/var/www,/opt
-
-# Hariç Tutulan Dizinler
-EXCLUDED_DIRS=/proc,/sys,/dev,/run,/boot,/snap,/usr,/bin,/sbin,/lib
-
-# Tehdit Yanıt Seçenekleri
-# log, quarantine, kill, alert
-THREAT_ACTION=log
-
-# Karantina Dizini
-QUARANTINE_DIR="/var/lib/dntcry/quarantine"
-
-# Email Bildirimi (isteğe bağlı)
-ENABLE_EMAIL_ALERT=false
-ALERT_EMAIL="admin@example.com"
-
-# Sistem Dosyası Koruma
-PROTECT_SYSTEM_FILES=true
-
-# Ağ Taraması (SMB yayılması tespit etme)
-ENABLE_NETWORK_MONITOR=true
-
-CONFIG_EOF
-    chmod 600 "$CONFIG_DIR/dntcry.conf"
-    log_info "Varsayılan konfigürasyon oluşturuldu"
+log_action() {
+    local action="$1"
+    local target="$2"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [ACTION] $action: $target" | tee -a "$LOG_DIR/actions.log"
 }
 
 # ============================================================================
-# İZLEME FONKSİYONLARI
+# 1. GELİŞTİRİLMİŞ SMB MONİTÖRÜ
 # ============================================================================
 
-# SMB/CIFS Port 445 taraması (WannaCry yayılması)
-check_smb_activity() {
-    local port_activity=$(netstat -tnp 2>/dev/null | grep ":445 " || echo "")
-    
-    if [ -n "$port_activity" ]; then
-        log_threat "SMB Port 445'te anormal aktivite tespit edildi"
-        log_threat "$port_activity"
-        return 1
-    fi
-    return 0
-}
-
-# Şüpheli İşlem Taraması
-check_suspicious_processes() {
-    local suspicious_procs=("wannacry" "wcry" "onion" "taskkill" "wmic" "psexec")
-    
-    for proc in "${suspicious_procs[@]}"; do
-        if pgrep -f "$proc" > /dev/null 2>&1; then
-            log_threat "Şüpheli işlem bulundu: $proc"
+monitor_smb_ports() {
+    # Port 445 (SMB) ve 139 (NetBIOS) kontrolü
+    for port in 445 139; do
+        local connections=$(netstat -tnp 2>/dev/null | grep ":$port " | wc -l)
+        
+        if [ "$connections" -gt 2 ]; then
+            log_threat "Anormal SMB Port $port aktivitesi: $connections bağlantı" "HIGH"
+            
+            # Bağlantıları listele
+            netstat -tnp 2>/dev/null | grep ":$port " | while read -r line; do
+                log_threat "SMB Bağlantısı: $line" "HIGH"
+            done
+            
             return 1
         fi
     done
     return 0
 }
 
-# Hızlı Dosya Değiştirme Algılama
-check_batch_file_changes() {
-    local suspicious_ext_pattern="(\.exe|\.dll|\.scr|\.bat|\.cmd|\.com|\.vbs)$"
-    local current_timestamp=$(date +%s)
+# ============================================================================
+# 2. GELİŞTİRİLMİŞ İŞLEM MONİTÖRÜ
+# ============================================================================
+
+monitor_suspicious_processes() {
+    local found=0
     
-    for dir in "${SUSPICIOUS_DIRS[@]}"; do
+    for proc in "${SUSPICIOUS_PROCESSES[@]}"; do
+        if pgrep -if "$proc" > /dev/null 2>&1; then
+            local pids=$(pgrep -if "$proc" || true)
+            log_threat "Şüpheli işlem tespit edildi: $proc (PID: $pids)" "CRITICAL"
+            
+            # İşlem detaylarını al
+            ps aux | grep -i "$proc" | grep -v grep | while read -r line; do
+                log_threat "İşlem Detayları: $line" "CRITICAL"
+            done
+            
+            found=1
+        fi
+    done
+    
+    return $found
+}
+
+# ============================================================================
+# 3. GELİŞTİRİLMİŞ DOSYA İZLEME
+# ============================================================================
+
+monitor_batch_file_changes() {
+    local suspicious_ext_pattern="(\.exe|\.dll|\.scr|\.bat|\.cmd|\.com|\.vbs|\.wncry|\.wcry)$"
+    local threat_found=0
+    
+    for dir in "${CRITICAL_DIRS[@]}"; do
         [ -d "$dir" ] || continue
         
-        # Son 5 dakikada değişen şüpheli dosyaları bul
-        local changed_files=$(find "$dir" -type f -mmin -5 2>/dev/null | grep -E "$suspicious_ext_pattern" || echo "")
+        # Son BATCH_DETECTION_WINDOW saniyede değişen şüpheli dosyaları bul
+        local changed_files=$(find "$dir" -type f -mmin -$((BATCH_DETECTION_WINDOW / 60)) 2>/dev/null | grep -E "$suspicious_ext_pattern" || echo "")
         
         if [ -n "$changed_files" ]; then
             local count=$(echo "$changed_files" | wc -l)
             
             if [ "$count" -ge "$MAX_BATCH_EXTENSIONS_CHANGE" ]; then
-                log_threat "BATCH DOSYA DEĞIŞTIRME: $count dosya değiştirildi"
-                log_threat "$changed_files"
+                log_threat "BATCH DOSYA DEĞIŞTIRME TESPİT EDİLDİ: $count dosya ($dir)" "CRITICAL"
                 
-                # Karantinaya al
                 echo "$changed_files" | while read -r file; do
-                    quarantine_file "$file"
+                    [ -f "$file" ] && {
+                        log_threat "Şüpheli dosya: $file" "CRITICAL"
+                        action_quarantine_file "$file"
+                    }
                 done
                 
-                return 1
+                threat_found=1
             fi
         fi
     done
-    return 0
+    
+    return $threat_found
 }
 
-# Dosya Uzantısı Değiştirme Tespit Etme
-check_extension_changes() {
-    local db_file="$DATA_DIR/file_extensions.db"
-    local suspicious_ext_pattern="(\.exe|\.dll|\.scr|\.bat|\.cmd|\.com|\.vbs)$"
+# ============================================================================
+# 4. GELİŞTİRİLMİŞ DOSYA UZANTISI TARAMASI
+# ============================================================================
+
+monitor_ransomware_extensions() {
+    local threat_found=0
     
-    for dir in "${SUSPICIOUS_DIRS[@]}"; do
+    for dir in "${CRITICAL_DIRS[@]}"; do
         [ -d "$dir" ] || continue
         
-        # Tüm dosyaları kontrol et
-        while IFS= read -r -d '' file; do
-            local file_hash=$(stat -c %i:%s "$file" 2>/dev/null)
-            local prev_hash=$(grep "^${file}:" "$db_file" 2>/dev/null | cut -d: -f2- || echo "")
+        # Ransomware uzantılarını ara
+        for ext in "${RANSOMWARE_EXTENSIONS[@]}"; do
+            local files=$(find "$dir" -type f -name "*$ext" 2>/dev/null || echo "")
             
-            # Dosya yeniyse veya değiştiyse
-            if [ -z "$prev_hash" ] || [ "$prev_hash" != "$file_hash" ]; then
-                # Şüpheli uzantıya sahipse
-                if [[ "$file" =~ $suspicious_ext_pattern ]]; then
-                    log_threat "Şüpheli dosya bulundu: $file"
-                    quarantine_file "$file"
-                fi
+            if [ -n "$files" ]; then
+                echo "$files" | while read -r file; do
+                    log_threat "FIDYE YAZILIMI DOSYASI TESPİT: $file (uzantı: $ext)" "CRITICAL"
+                    action_quarantine_file "$file"
+                    threat_found=1
+                done
             fi
-        done < <(find "$dir" -type f -print0 2>/dev/null)
+        done
     done
     
-    # Veritabanını güncelle
-    update_file_database "$db_file"
+    return $threat_found
 }
 
-# Yüksek CPU/IO Kullanımı Taraması
-check_high_resource_usage() {
-    # WannaCry encrypt işlemleri yüksek CPU/IO tüketir
-    local high_io_procs=$(iotop -b -n 1 2>/dev/null | tail -n +4 | awk '$4+$5 > 50 {print}' || echo "")
-    
-    if [ -n "$high_io_procs" ]; then
-        log_warning "Yüksek I/O kullanımı tespit edildi"
-        log_warning "$high_io_procs"
+# ============================================================================
+# 5. GELİŞTİRİLMİŞ I/O MONİTÖRÜ
+# ============================================================================
+
+monitor_io_activity() {
+    # Yüksek I/O aktivitesi = Dosya Şifreleme
+    if command -v iotop &> /dev/null; then
+        local high_io=$(iotop -b -n 1 2>/dev/null | tail -n +4 | awk '$4+$5 > 40 {print}' || echo "")
+        
+        if [ -n "$high_io" ]; then
+            log_warning "Yüksek I/O Aktivitesi Tespit Edildi (Şifreleme İhtiyatı)"
+            echo "$high_io" | while read -r line; do
+                log_warning "I/O Activity: $line"
+            done
+        fi
     fi
 }
 
-# Bellek Taraması (Temel kötü amaçlı yazılım imzaları)
-check_memory_signatures() {
-    local signatures=("WannaCry" "WCRY" "wannacry_data" "tasksche.exe")
+# ============================================================================
+# 6. GELİŞTİRİLMİŞ CPU MONİTÖRÜ
+# ============================================================================
+
+monitor_cpu_activity() {
+    # Yüksek CPU = Şifreleme işlemi
+    local high_cpu=$(ps aux | awk 'NR>1 && ($3+$4) > 80 {print}' | head -10)
+    
+    if [ -n "$high_cpu" ]; then
+        log_warning "Yüksek CPU Kullanımı Tespit Edildi"
+        echo "$high_cpu" | while read -r proc; do
+            local cmd=$(echo "$proc" | awk '{$1=$2=$3=$4=$5=$6=$7=$8=$9=$10=$11=$12=""; print}' | xargs)
+            
+            # Şüpheli komut kontrolü
+            if [[ "$cmd" =~ (encrypt|crypt|cipher|ransomware|crypto|zip|7z|rar) ]]; then
+                log_threat "Şüpheli İşlem - Yüksek CPU: $proc" "HIGH"
+            fi
+        done
+    fi
+}
+
+# ============================================================================
+# 7. GELİŞTİRİLMİŞ BELLEK TARAMASI
+# ============================================================================
+
+monitor_memory_threats() {
+    local signatures=("WannaCry" "WCRY" "EternalBlue" "ms17-010" "ransomware" "crypto_locker")
     
     for sig in "${signatures[@]}"; do
-        if strings /proc/*/maps 2>/dev/null | grep -qi "$sig"; then
-            log_threat "Bellek imzası bulundu: $sig"
+        # Çalışan işlemde imza ara
+        if pgrep -a . 2>/dev/null | grep -qi "$sig"; then
+            log_threat "BELLEK İMZASI TESPİT: $sig" "CRITICAL"
             return 1
         fi
     done
+    
     return 0
 }
 
 # ============================================================================
-# KARANTINA VE YANIT
+# 8. GELİŞTİRİLMİŞ DOSYA BÜTÜNLÜĞü KONTROLÜ
 # ============================================================================
 
-quarantine_file() {
-    local file="$1"
-    [ -f "$file" ] || return 1
+monitor_file_integrity() {
+    local integrity_db="$DATA_DIR/file_integrity.db"
+    local threat_found=0
     
-    local quarantine_dir="$DATA_DIR/quarantine"
-    mkdir -p "$quarantine_dir"
+    # İlk çalışmada veritabanı oluştur
+    if [ ! -f "$integrity_db" ]; then
+        log_info "Dosya bütünlüğü veritabanı oluşturuluyor..."
+        update_file_integrity_db "$integrity_db"
+        return 0
+    fi
     
-    local safe_name=$(echo "$file" | md5sum | cut -d' ' -f1)
-    local backup_name="${safe_name}_$(basename "$file")"
-    
-    # Dosyayı karantinaya taşı
-    cp "$file" "$quarantine_dir/$backup_name"
-    
-    # Meta veri kaydet
-    cat > "$quarantine_dir/${backup_name}.meta" << META_EOF
-Original: $file
-Time: $(date)
-Size: $(stat -c%s "$file")
-Permissions: $(stat -c%a "$file")
-Owner: $(stat -c%U:%G "$file")
-META_EOF
-    
-    # Orijinal dosyayı sil
-    shred -vfz -n 3 "$file" 2>/dev/null || rm -f "$file"
-    
-    log_threat "Dosya karantinaya alındı: $file → $backup_name"
-}
-
-# Karantina Dosyasını Geri Yükle
-restore_from_quarantine() {
-    local quarantine_name="$1"
-    local quarantine_dir="$DATA_DIR/quarantine"
-    local meta_file="$quarantine_dir/${quarantine_name}.meta"
-    
-    [ -f "$meta_file" ] || { log_error "Meta dosya bulunamadı"; return 1; }
-    
-    local original_path=$(grep "^Original: " "$meta_file" | cut -d' ' -f2-)
-    
-    # Geri yükle
-    cp "$quarantine_dir/$quarantine_name" "$original_path"
-    
-    # Meta veriyi güncelle
-    local perms=$(grep "^Permissions: " "$meta_file" | cut -d' ' -f2-)
-    local owner=$(grep "^Owner: " "$meta_file" | cut -d' ' -f2-)
-    
-    chmod "$perms" "$original_path"
-    chown "$owner" "$original_path"
-    
-    log_info "Dosya geri yüklendi: $original_path"
-}
-
-# ============================================================================
-# VERİTABANI YÖNETİMİ
-# ============================================================================
-
-update_file_database() {
-    local db_file="$1"
-    
-    > "$db_file"  # Dosyayı temizle
-    
-    for dir in "${SUSPICIOUS_DIRS[@]}"; do
+    # Kritik dosyaları kontrol et
+    for dir in "${CRITICAL_DIRS[@]}"; do
         [ -d "$dir" ] || continue
         
         find "$dir" -type f 2>/dev/null | while read -r file; do
-            local hash=$(stat -c %i:%s "$file" 2>/dev/null)
-            echo "$file:$hash" >> "$db_file"
+            local current_hash=$(md5sum "$file" 2>/dev/null | cut -d' ' -f1 || echo "")
+            [ -z "$current_hash" ] && continue
+            
+            local stored_hash=$(grep "^${file}:" "$integrity_db" 2>/dev/null | cut -d: -f2 || echo "")
+            
+            # Yeni dosya veya değişmiş dosya
+            if [ -z "$stored_hash" ] || [ "$stored_hash" != "$current_hash" ]; then
+                # Uzantı kontrolü
+                if [[ "$file" =~ \.(wncry|wcry|exe|scr)$ ]]; then
+                    log_threat "DOSYA BÜTÜNLÜĞü İHLALİ: $file" "HIGH"
+                    action_quarantine_file "$file"
+                    threat_found=1
+                fi
+            fi
+        done
+    done
+    
+    return $threat_found
+}
+
+update_file_integrity_db() {
+    local db_file="$1"
+    > "$db_file"
+    
+    for dir in "${CRITICAL_DIRS[@]}"; do
+        [ -d "$dir" ] || continue
+        
+        find "$dir" -type f 2>/dev/null | while read -r file; do
+            local hash=$(md5sum "$file" 2>/dev/null | cut -d' ' -f1 || echo "")
+            [ -n "$hash" ] && echo "$file:$hash" >> "$db_file"
         done
     done
     
@@ -293,192 +313,351 @@ update_file_database() {
 }
 
 # ============================================================================
+# 9. GELİŞTİRİLMİŞ AĞBAĞLANTISI MONİTÖRÜ
+# ============================================================================
+
+monitor_network_anomalies() {
+    # Anormal bağlantılar
+    local established=$(netstat -tn 2>/dev/null | grep ESTABLISHED | wc -l)
+    local time_wait=$(netstat -tn 2>/dev/null | grep TIME_WAIT | wc -l)
+    
+    # İstatistik veritabanı
+    local stats_file="$DATA_DIR/network_stats.txt"
+    [ ! -f "$stats_file" ] && echo "0" > "$stats_file"
+    
+    local prev_established=$(cat "$stats_file" || echo "0")
+    
+    # Anormal artış kontrol et
+    if [ "$established" -gt $((prev_established + 50)) ]; then
+        log_threat "AĞBAĞLANTILARI ANORMAL ARTIŞI: $established (önceki: $prev_established)" "HIGH"
+    fi
+    
+    echo "$established" > "$stats_file"
+    
+    # Belirli portlara bağlantıları kontrol et
+    for port in "${SUSPICIOUS_PORTS[@]}"; do
+        local connections=$(netstat -tn 2>/dev/null | grep ":$port " | grep ESTABLISHED | wc -l)
+        if [ "$connections" -gt 5 ]; then
+            log_threat "Anormal Port $port Bağlantısı: $connections" "MEDIUM"
+        fi
+    done
+}
+
+# ============================================================================
+# 10. GELİŞTİRİLMİŞ DOSYA SİLME POLA TESPİTİ
+# ============================================================================
+
+monitor_deletion_pattern() {
+    # Dosya silme patterni = Kilitlenmiş dosya gizleme
+    local deletion_log="$DATA_DIR/deletion_history.txt"
+    local current_time=$(date +%s)
+    
+    find "${CRITICAL_DIRS[@]}" -mmin -1 2>/dev/null | while read -r file; do
+        if [ -d "$file" ]; then
+            continue
+        fi
+        
+        # Son 1 dakikada silinen dosyaları kontrol et
+        local size=$(stat -c%s "$file" 2>/dev/null || echo "0")
+        
+        # Boş veya çok küçük dosya = Potansiyel şifreli dosya
+        if [ "$size" -lt 1000 ] && [[ "$file" =~ \.(wncry|wcry|txt|log|encrypted)$ ]]; then
+            log_threat "POTANSİYEL FIDYE DOSYASI: $file (boyut: $size bytes)" "MEDIUM"
+        fi
+    done
+}
+
+# ============================================================================
+# KARANTINA VE YANIT SİSTEMİ
+# ============================================================================
+
+action_quarantine_file() {
+    local file="$1"
+    
+    [ ! -f "$file" ] && return 1
+    
+    local safe_name=$(echo "$file" | md5sum | cut -d' ' -f1)
+    local backup_name="${safe_name}_$(basename "$file")"
+    
+    # Dosyayı karantinaya taşı
+    cp "$file" "$QUARANTINE_DIR/$backup_name" 2>/dev/null || return 1
+    
+    # Meta veri kaydet
+    cat > "$QUARANTINE_DIR/${backup_name}.meta" << META_EOF
+Original: $file
+Time: $(date)
+Size: $(stat -c%s "$file")
+Permissions: $(stat -c%a "$file")
+Owner: $(stat -c%U:%G "$file")
+Hash: $(md5sum "$file" | cut -d' ' -f1)
+META_EOF
+    
+    # Orijinal dosyayı güvenli şekilde sil
+    shred -vfz -n 3 "$file" 2>/dev/null || rm -f "$file"
+    
+    log_action "QUARANTINE" "$file → $backup_name"
+    return 0
+}
+
+action_kill_process() {
+    local proc="$1"
+    
+    pgrep -f "$proc" | while read -r pid; do
+        kill -9 "$pid" 2>/dev/null || true
+        log_action "KILL_PROCESS" "$proc (PID: $pid)"
+    done
+}
+
+action_disable_port() {
+    local port="$1"
+    
+    # iptables ile portu engelle
+    iptables -A INPUT -p tcp --dport "$port" -j DROP 2>/dev/null || true
+    iptables -A INPUT -p udp --dport "$port" -j DROP 2>/dev/null || true
+    
+    log_action "BLOCK_PORT" "Port $port engellendi"
+}
+
+action_alert() {
+    local message="$1"
+    
+    # Sistem bildirimi gönder
+    if command -v wall &> /dev/null; then
+        echo "DNTCRY ALERT: $message" | wall
+    fi
+    
+    # Log dosyasına yaz
+    log_action "ALERT" "$message"
+}
+
+# ============================================================================
+# GELİŞTİRİLMİŞ THREAT RESPONSE
+# ============================================================================
+
+handle_threat() {
+    local threat_type="$1"
+    local target="$2"
+    
+    case "$THREAT_ACTION" in
+        log)
+            log_threat "Threat logged: $threat_type - $target"
+            ;;
+        quarantine)
+            [ -f "$target" ] && action_quarantine_file "$target"
+            ;;
+        kill)
+            action_kill_process "$target"
+            ;;
+        block)
+            action_disable_port "$target"
+            ;;
+        alert)
+            action_alert "$threat_type: $target"
+            ;;
+        *)
+            log_threat "Unknown threat action: $THREAT_ACTION"
+            ;;
+    esac
+}
+
+# ============================================================================
+# SİSTEM TARAMASI
+# ============================================================================
+
+system_scan() {
+    log_info "══════════════════════════════════════════════════════"
+    log_info "dntcry System Scan Başladı"
+    log_info "══════════════════════════════════════════════════════"
+    
+    local threats=0
+    
+    # Tüm kontroller
+    log_info "1/8 - SMB Portları taranıyor..."
+    monitor_smb_ports || ((threats++))
+    
+    log_info "2/8 - Şüpheli işlemler taranıyor..."
+    monitor_suspicious_processes || ((threats++))
+    
+    log_info "3/8 - Hızlı dosya değişiklikleri taranıyor..."
+    monitor_batch_file_changes || ((threats++))
+    
+    log_info "4/8 - Ransomware uzantıları taranıyor..."
+    monitor_ransomware_extensions || ((threats++))
+    
+    log_info "5/8 - I/O aktivitesi analiz ediliyor..."
+    monitor_io_activity
+    
+    log_info "6/8 - CPU aktivitesi analiz ediliyor..."
+    monitor_cpu_activity
+    
+    log_info "7/8 - Bellek tehditleri taranıyor..."
+    monitor_memory_threats
+    
+    log_info "8/8 - Dosya bütünlüğü kontrol ediliyor..."
+    monitor_file_integrity || ((threats++))
+    
+    log_info "9/8 - Ağbağlantıları analiz ediliyor..."
+    monitor_network_anomalies
+    
+    log_info "10/8 - Dosya silme desenleri taranıyor..."
+    monitor_deletion_pattern
+    
+    log_info "══════════════════════════════════════════════════════"
+    log_info "Tarama Tamamlandı - Toplam Tehditler: $threats"
+    log_info "══════════════════════════════════════════════════════"
+    
+    return $threats
+}
+
+# ============================================================================
 # RAPORLAMA
 # ============================================================================
 
 generate_report() {
-    local report_file="$LOG_DIR/dntcry_report_$(date +%Y%m%d_%H%M%S).txt"
+    local report_file="$LOG_DIR/report_$(date +%Y%m%d_%H%M%S).txt"
     
-    cat > "$report_file" << REPORT_EOF
-╔═══════════════════════════════════════════════════════════╗
-║           dntcry - Güvenlik İzleme Raporu                ║
-║              $(date '+%Y-%m-%d %H:%M:%S')                     ║
-╚═══════════════════════════════════════════════════════════╝
+    cat > "$report_file" << 'EOF'
+╔════════════════════════════════════════════════════════════╗
+║         dntcry - Güvenlik İzleme Raporu                  ║
+╚════════════════════════════════════════════════════════════╝
 
-[SISTEM BİLGİLERİ]
-Hostname: $(hostname)
-Kernel: $(uname -r)
-Uptime: $(uptime -p)
-
-[İZLEME STATÜSÜ]
-Service Status: $(systemctl is-active dntcry)
-Last Check: $(date)
-
-[THREAT LOG - Son 10 Tehdit]
-$(tail -n 10 "$LOG_DIR/threats.log" 2>/dev/null || echo "No threats detected")
-
-[WARNING LOG - Son 10 Uyarı]
-$(tail -n 10 "$LOG_DIR/dntcry.log" 2>/dev/null | grep WARNING || echo "No warnings")
-
-[KARANTINA STATÜSÜ]
-Karantina Dosyaları: $(ls -1 "$DATA_DIR/quarantine" 2>/dev/null | wc -l)
-Karantina Boyutu: $(du -sh "$DATA_DIR/quarantine" 2>/dev/null | cut -f1 || echo "0B")
-
-[AĞBAĞLANTILARI]
-Açık Portlar:
-$(netstat -tnl 2>/dev/null | tail -n +3)
-
-REPORT_EOF
+EOF
     
-    echo "$report_file"
+    echo "Rapor Tarihi: $(date)" >> "$report_file"
+    echo "Sistem: $(hostname)" >> "$report_file"
+    echo "Kernel: $(uname -r)" >> "$report_file"
+    echo "" >> "$report_file"
+    
+    echo "─── SON TEHDITLER ───" >> "$report_file"
+    tail -n 20 "$LOG_DIR/threats.log" 2>/dev/null >> "$report_file" || echo "Tehdit yok" >> "$report_file"
+    echo "" >> "$report_file"
+    
+    echo "─── KARANTINA DURUMU ───" >> "$report_file"
+    echo "Karantina Dosyaları: $(find "$QUARANTINE_DIR" -type f -name "*.meta" 2>/dev/null | wc -l)" >> "$report_file"
+    echo "Karantina Boyutu: $(du -sh "$QUARANTINE_DIR" 2>/dev/null | cut -f1)" >> "$report_file"
+    echo "" >> "$report_file"
+    
+    echo "─── AÇIK PORTLAR ───" >> "$report_file"
+    netstat -tnl 2>/dev/null | tail -n +3 >> "$report_file" || true
+    echo "" >> "$report_file"
+    
+    echo "─── AKTİF BAĞLANTILARI ───" >> "$report_file"
+    netstat -tn 2>/dev/null | grep ESTABLISHED | wc -l >> "$report_file"
+    
+    log_info "Rapor oluşturuldu: $report_file"
 }
 
 # ============================================================================
-# SYSTEMD SERVİS OLUŞTURMA
+# DAEMON DÖNGÜSÜ
 # ============================================================================
 
-create_systemd_service() {
-    local service_file="$SERVICE_DIR/dntcry.service"
+daemon_loop() {
+    log_info "dntcry Daemon başlatılıyor (PID: $$)"
+    log_info "İzleme aralığı: ${MONITOR_INTERVAL} saniye"
     
-    cat > "$service_file" << 'SERVICE_EOF'
-[Unit]
-Description=dntcry - Fidye Yazılımı Koruma Sistemi
-Documentation=https://github.com/yourusername/dntcry
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/var/lib/dntcry
-ExecStart=/usr/local/bin/dntcry-daemon
-Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=dntcry
-
-# Kaynak Sınırlamaları
-LimitNOFILE=65535
-LimitNPROC=32768
-
-# Güvenlik Ayarları
-NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths=/var/lib/dntcry /var/log/dntcry
-
-[Install]
-WantedBy=multi-user.target
-SERVICE_EOF
+    # Konfigürasyon dosyasını yükle
+    [ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
     
-    chmod 644 "$service_file"
-    log_info "Systemd servisi oluşturuldu: $service_file"
+    local iteration=0
+    
+    while true; do
+        ((iteration++))
+        
+        system_scan
+        
+        # Her 10 taramada bir rapor oluştur
+        if [ $((iteration % 10)) -eq 0 ]; then
+            generate_report
+        fi
+        
+        sleep "$MONITOR_INTERVAL"
+    done
 }
 
 # ============================================================================
-# DAEMON
+# QUICK SCAN (Acil Tarama)
 # ============================================================================
 
-create_daemon_script() {
-    cat > "$INSTALL_DIR/dntcry-daemon" << 'DAEMON_EOF'
-#!/bin/bash
-
-# dntcry Daemon - Ana İzleme Döngüsü
-
-source /etc/dntcry/dntcry.conf
-source "$INSTALL_DIR/dntcry"
-
-LOG_DIR="/var/log/dntcry"
-DATA_DIR="/var/lib/dntcry"
-
-mkdir -p "$LOG_DIR" "$DATA_DIR"
-
-log_info "dntcry Daemon başlatılıyor (PID: $$)"
-
-# Ana döngü
-while true; do
-    log_info "İzleme döngüsü başladı"
-    
-    # Tüm kontroller
-    check_smb_activity
-    check_suspicious_processes
-    check_batch_file_changes
-    check_extension_changes
-    check_high_resource_usage
-    check_memory_signatures
-    
-    # Raporlama (her saatte bir)
-    if [ $(($(date +%M))) -eq 0 ]; then
-        generate_report > /dev/null
-    fi
-    
-    sleep "$MONITOR_INTERVAL"
-done
-
-DAEMON_EOF
-    
-    chmod +x "$INSTALL_DIR/dntcry-daemon"
-    log_info "Daemon scripti oluşturuldu"
-}
-
-# ============================================================================
-# KURULUM
-# ============================================================================
-
-install_dntcry() {
-    echo -e "${MAGENTA}"
-    echo "╔═══════════════════════════════════════════════════════════════╗"
-    echo "║     dntcry - Fidye Yazılımı Koruma Sistemi v${VERSION}                  ║"
-    echo "║                   Kurulum Scripti                             ║"
-    echo "╚═══════════════════════════════════════════════════════════════╝"
-    echo -e "${NC}"
+quick_scan() {
+    echo -e "${CYAN}🔍 Hızlı Tarama Başladı...${NC}"
     echo ""
     
-    # Dizinleri oluştur
-    create_directories
+    system_scan
     
-    # Konfigürasyonu oluştur
-    create_default_config
-    
-    # Servisi oluştur
-    create_systemd_service
-    
-    # Daemon'u oluştur
-    create_daemon_script
-    
-    # Servis'i etkinleştir
-    echo -e "${YELLOW}Systemd servisi etkinleştiriliyor...${NC}"
-    systemctl daemon-reload
-    systemctl enable dntcry
-    systemctl start dntcry
-    
-    # Doğrulama
-    sleep 2
-    if systemctl is-active --quiet dntcry; then
-        echo -e "${GREEN}✓ dntcry servisi başarıyla kuruldu ve çalışıyor!${NC}"
-        echo ""
-        echo -e "${CYAN}Servis Komutları:${NC}"
-        echo "  systemctl status dntcry      - Durumunu kontrol et"
-        echo "  systemctl stop dntcry        - Durdur"
-        echo "  systemctl restart dntcry     - Yeniden başlat"
-        echo "  journalctl -u dntcry -f      - Logları takip et"
-        echo ""
-        echo -e "${CYAN}Dosya Yerleri:${NC}"
-        echo "  Konfigürasyon: $CONFIG_DIR/dntcry.conf"
-        echo "  Loglar: $LOG_DIR/"
-        echo "  Karantina: $DATA_DIR/quarantine"
-    else
-        echo -e "${RED}❌ Servis başlatılamadı!${NC}"
-        systemctl status dntcry
-        exit 1
-    fi
+    echo ""
+    echo -e "${CYAN}✓ Hızlı Tarama Tamamlandı${NC}"
 }
 
-# Main
-if [ "$EUID" -ne 0 ]; then 
-    echo -e "${RED}❌ Bu script root olarak çalıştırılmalıdır!${NC}"
-    exit 1
-fi
+# ============================================================================
+# STATUS KOMUT
+# ============================================================================
 
-install_dntcry
+show_status() {
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}         dntcry - Sistem Durumu${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════${NC}"
+    echo ""
+    
+    echo -e "${GREEN}📊 Servis Durumu:${NC}"
+    systemctl is-active dntcry > /dev/null && echo "   ✓ Çalışıyor" || echo "   ✗ Kapalı"
+    echo ""
+    
+    echo -e "${GREEN}📋 Son Tehditler:${NC}"
+    if [ -f "$LOG_DIR/threats.log" ]; then
+        tail -n 10 "$LOG_DIR/threats.log" | sed 's/^/   /'
+    else
+        echo "   Tehdit bulunmadı"
+    fi
+    echo ""
+    
+    echo -e "${GREEN}🔒 Karantina:${NC}"
+    local count=$(find "$QUARANTINE_DIR" -type f -name "*.meta" 2>/dev/null | wc -l)
+    local size=$(du -sh "$QUARANTINE_DIR" 2>/dev/null | cut -f1 || echo "0B")
+    echo "   Dosya: $count"
+    echo "   Boyut: $size"
+    echo ""
+    
+    echo -e "${GREEN}📈 İstatistikler:${NC}"
+    echo "   Toplam Loglar: $(wc -l < "$LOG_DIR/dntcry.log" 2>/dev/null || echo "0")"
+    echo "   Toplam Tehditler: $(wc -l < "$LOG_DIR/threats.log" 2>/dev/null || echo "0")"
+    echo "   Toplam İşlemler: $(wc -l < "$LOG_DIR/actions.log" 2>/dev/null || echo "0")"
+    echo ""
+    
+    echo -e "${CYAN}═══════════════════════════════════════════════════════${NC}"
+    echo ""
+}
+
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
+
+main() {
+    log_init
+    
+    case "${1:-daemon}" in
+        daemon)
+            daemon_loop
+            ;;
+        scan)
+            quick_scan
+            ;;
+        status)
+            show_status
+            ;;
+        report)
+            generate_report
+            ;;
+        *)
+            echo "Kullanım: dntcry [daemon|scan|status|report]"
+            echo "  daemon - Daemon modunda çalıştır (varsayılan)"
+            echo "  scan   - Hızlı tarama yap"
+            echo "  status - Sistem durumunu göster"
+            echo "  report - Rapor oluştur"
+            exit 1
+            ;;
+    esac
+}
+
+# Program başla
+main "$@"
