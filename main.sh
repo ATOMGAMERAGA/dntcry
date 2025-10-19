@@ -243,13 +243,48 @@ monitor_cpu_activity() {
 # ============================================================================
 
 monitor_memory_threats() {
-    local signatures=("WannaCry" "WCRY" "EternalBlue" "ms17-010" "ransomware" "crypto_locker")
+    # Daha kesin imzalar ve context kontrol
+    local critical_signatures=(
+        "EternalBlue"
+        "ms17.010"
+        "wannacry.exe"
+        "wcry.exe"
+        "cryptolocker"
+        "ransomware"
+    )
     
-    for sig in "${signatures[@]}"; do
-        # Çalışan işlemde imza ara
-        if pgrep -a . 2>/dev/null | grep -qi "$sig"; then
-            log_threat "BELLEK İMZASI TESPİT: $sig" "CRITICAL"
-            return 1
+    local suspicious_signatures=(
+        "wncry"
+        "wcry"
+        "onion"
+    )
+    
+    # Kritik imzaları kontrol et
+    for sig in "${critical_signatures[@]}"; do
+        # Daha dar arama - tam kelimeyi ve process context'ini kontrol et
+        local matches=$(pgrep -a . 2>/dev/null | grep -E "\s$sig\s|\s$sig\$" || echo "")
+        
+        if [ -n "$matches" ]; then
+            # Yanlış pozitif kontrolü - eğer sistem process'i ise atla
+            if [[ ! "$matches" =~ (bash|grep|cat|echo|sed|awk) ]]; then
+                log_threat "BELLEK İMZASI TESPİT: $sig" "CRITICAL"
+                echo "$matches" | while read -r line; do
+                    log_threat "İşlem: $line" "CRITICAL"
+                done
+                return 1
+            fi
+        fi
+    done
+    
+    # Şüpheli imzaları kontrol et (daha toleranslı)
+    for sig in "${suspicious_signatures[@]}"; do
+        local matches=$(pgrep -a . 2>/dev/null | grep -iE "$sig" | grep -vE "(dntcry|bash|grep)" || echo "")
+        
+        if [ -n "$matches" ]; then
+            log_warning "ŞÜPHELI BELLEK İMZASI: $sig" 
+            echo "$matches" | while read -r line; do
+                log_warning "İşlem: $line"
+            done
         fi
     done
     
