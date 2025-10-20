@@ -1222,3 +1222,176 @@ activate_emergency_mode() {
     echo -e "${GREEN}[✓] Emergency response completed${NC}"
     echo -e "${YELLOW}[!] Manual review recommended${NC}"
 }
+
+# ============================================================================
+# CLI COMMANDS
+# ============================================================================
+
+show_help() {
+    cat << 'EOFHELP'
+╔═══════════════════════════════════════════════════════════════╗
+║                dntcry v2.0 - Enterprise Edition               ║
+║           WannaCry & Ransomware Protection System             ║
+╚═══════════════════════════════════════════════════════════════╝
+
+USAGE:
+    dntcry [COMMAND] [OPTIONS]
+
+COMMANDS:
+    daemon              Start daemon mode (default, runs continuously)
+    scan                Run quick WannaCry scan
+    full-scan           Run comprehensive system scan
+    status              Show system status and statistics
+    report              Generate security report
+    emergency           Activate emergency mode
+    health              Run health check
+    help                Show this help message
+    version             Show version information
+
+EXAMPLES:
+    sudo dntcry daemon              # Start as daemon
+    sudo dntcry scan                # Quick WannaCry scan
+    sudo dntcry full-scan           # Deep system scan
+    sudo dntcry status              # Check status
+    sudo dntcry emergency           # Emergency mode
+
+CONFIGURATION:
+    Config: /etc/dntcry/dntcry.conf
+    Logs:   /var/log/dntcry/
+    Data:   /var/lib/dntcry/
+
+SUPPORT:
+    Documentation: https://github.com/ATOMGAMERAGA/dntcry
+    Issues: https://github.com/ATOMGAMERAGA/dntcry/issues
+
+EOFHELP
+}
+
+show_version() {
+    echo "dntcry v$VERSION"
+    echo "Build Date: $BUILD_DATE"
+    echo "Platform: Linux (Debian-based)"
+    echo ""
+    echo "Copyright (c) 2024 ATOMGAMERAGA"
+    echo "License: MIT"
+}
+
+quick_status() {
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    echo "         dntcry - Quick Status"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+    
+    echo "📊 Service Status:"
+    if systemctl is-active dntcry &>/dev/null; then
+        echo -e "   ${GREEN}✓ Running${NC}"
+    else
+        echo -e "   ${RED}✗ Stopped${NC}"
+    fi
+    echo ""
+    
+    echo "📋 Recent Threats:"
+    if [ -f "$LOG_DIR/threats.log" ]; then
+        tail -n 5 "$LOG_DIR/threats.log" 2>/dev/null | sed 's/^/   /' || echo "   No threats detected"
+    else
+        echo "   No threats detected"
+    fi
+    echo ""
+    
+    echo "🔒 Quarantine Status:"
+    local q_count=$(find "$QUARANTINE_DIR" -type f -name "*.meta" 2>/dev/null | wc -l)
+    local q_size=$(du -sh "$QUARANTINE_DIR" 2>/dev/null | cut -f1 || echo "0B")
+    echo "   Files: $q_count"
+    echo "   Size: $q_size"
+    echo ""
+    
+    echo "📈 System Info:"
+    echo "   Hostname: $(hostname)"
+    echo "   Kernel: $(uname -r)"
+    echo "   Uptime: $(uptime -p)"
+    echo ""
+    
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+}
+
+# ============================================================================
+# MAIN ENTRY POINT
+# ============================================================================
+
+main() {
+    # Konfigürasyonu yükle
+    [ -f "$MAIN_CONFIG" ] && source "$MAIN_CONFIG"
+    
+    # Root kontrolü
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}Error: dntcry must be run as root${NC}"
+        echo "Please use: sudo dntcry"
+        exit 1
+    fi
+    
+    # Dizin yapısını kontrol et
+    init_logging
+    
+    # Komut parse et
+    local cmd="${1:-daemon}"
+    
+    case "$cmd" in
+        daemon)
+            echo -e "${CYAN}Starting dntcry daemon...${NC}"
+            daemon_loop_wannacry
+            ;;
+        
+        scan)
+            echo -e "${CYAN}Starting WannaCry scan...${NC}"
+            scan_wannacry_comprehensive
+            ;;
+        
+        full-scan)
+            echo -e "${CYAN}Starting full system scan...${NC}"
+            full_system_scan
+            ;;
+        
+        status)
+            quick_status
+            ;;
+        
+        report)
+            echo -e "${CYAN}Generating security report...${NC}"
+            generate_daily_report
+            echo -e "${GREEN}Report generated successfully${NC}"
+            ;;
+        
+        emergency)
+            activate_emergency_mode
+            ;;
+        
+        health)
+            echo -e "${CYAN}Running health check...${NC}"
+            health_check
+            ;;
+        
+        dashboard)
+            show_dashboard
+            ;;
+        
+        help|--help|-h)
+            show_help
+            ;;
+        
+        version|--version|-v)
+            show_version
+            ;;
+        
+        *)
+            echo -e "${RED}Unknown command: $cmd${NC}"
+            echo ""
+            echo "Use 'dntcry help' for usage information"
+            exit 1
+            ;;
+    esac
+}
+
+# Program başlangıcı
+main "$@"
