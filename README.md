@@ -14,7 +14,7 @@
 **dntcry**, Debian tabanlı sunucularda fidye yazılımlarının (ransomware) yayılması ve bulaşma mekanizmalarına karşı proaktif bir savunma katmanı oluşturmaktadır. Özellikle WannaCry benzeri kripto-kilitworm atakları (cryptoworms) gegen çeşitli izleme ve algılama tekniklerini uygular.
 
 name = dntcry
-ver = 1.0.0
+ver = 3.0.0
 des = Wanna Cry Protection App Made With ALP
 
 ---
