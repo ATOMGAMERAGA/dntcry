@@ -1398,6 +1398,113 @@ show_quarantine_info() {
     echo ""
 }
 
+show_statistics() {
+    echo ""
+    echo "═══════════════════════════════════════════════════════════"
+    echo "         dntcry Statistics"
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+    
+    # Toplam tehditler
+    local total_threats=$(wc -l < "$LOG_DIR/threats.log" 2>/dev/null || echo "0")
+    local critical_threats=$(grep "CRITICAL" "$LOG_DIR/threats.log" 2>/dev/null | wc -l)
+    local high_threats=$(grep "HIGH" "$LOG_DIR/threats.log" 2>/dev/null | wc -l)
+    
+    echo "📊 Threat Statistics:"
+    echo "   Total Threats: $total_threats"
+    echo "   Critical: $critical_threats"
+    echo "   High: $high_threats"
+    echo ""
+    
+    # Karantina
+    local q_files=$(find "$QUARANTINE_DIR" -type f -name "*.meta" 2>/dev/null | wc -l)
+    local q_size=$(du -sh "$QUARANTINE_DIR" 2>/dev/null | cut -f1 || echo "0B")
+    
+    echo "🔒 Quarantine Statistics:"
+    echo "   Files: $q_files"
+    echo "   Total Size: $q_size"
+    echo ""
+    
+    # Backups
+    local backup_count=$(find "$BACKUP_DIR" -type f -name "backup_*.tar.gz" 2>/dev/null | wc -l)
+    local backup_size=$(du -sh "$BACKUP_DIR" 2>/dev/null | cut -f1 || echo "0B")
+    
+    echo "💾 Backup Statistics:"
+    echo "   Backups: $backup_count"
+    echo "   Total Size: $backup_size"
+    echo ""
+    
+    # Uptime
+    if [ -f "$DATA_DIR/start_time" ]; then
+        local start_time=$(cat "$DATA_DIR/start_time")
+        local current_time=$(date +%s)
+        local uptime_seconds=$((current_time - start_time))
+        local uptime_hours=$((uptime_seconds / 3600))
+        
+        echo "⏱️  Service Uptime:"
+        echo "   $uptime_hours hours"
+    else
+        echo "⏱️  Service Uptime:"
+        echo "   N/A (start time not recorded)"
+    fi
+    echo ""
+    
+    # En sık tespit edilen tehditler
+    echo "🔥 Top 5 Threats:"
+    if [ -f "$EVENT_LOG" ]; then
+        grep -oP '(?<=event_type": ")[^"]+' "$EVENT_LOG" 2>/dev/null | sort | uniq -c | sort -rn | head -5 | while read count type; do
+            echo "   $type: $count times"
+        done
+    else
+        echo "   No threat data available"
+    fi
+    echo ""
+    
+    # System Resources
+    echo "💻 System Resources:"
+    local cpu=$(top -bn1 2>/dev/null | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1}' | cut -d. -f1 || echo "N/A")
+    local mem=$(free 2>/dev/null | grep Mem | awk '{printf("%.1f", $3/$2*100)}' || echo "N/A")
+    local disk=$(df / 2>/dev/null | tail -1 | awk '{print $5}' | sed 's/%//' || echo "N/A")
+    
+    echo "   CPU Usage: ${cpu}%"
+    echo "   Memory Usage: ${mem}%"
+    echo "   Disk Usage: ${disk}%"
+    echo ""
+    
+    # Network
+    local connections=$(netstat -tn 2>/dev/null | grep ESTABLISHED | wc -l || echo "0")
+    local smb_conns=$(netstat -tn 2>/dev/null | grep ":445 " | wc -l || echo "0")
+    
+    echo "🌐 Network Statistics:"
+    echo "   Active Connections: $connections"
+    echo "   SMB Connections: $smb_conns"
+    echo ""
+    
+    # Service Status
+    echo "🔧 Service Status:"
+    if systemctl is-active dntcry &>/dev/null; then
+        echo "   Status: Running"
+    else
+        echo "   Status: Stopped"
+    fi
+    
+    if [ -f "$DATA_DIR/emergency.lock" ]; then
+        echo "   Emergency Mode: ACTIVE"
+    else
+        echo "   Emergency Mode: Inactive"
+    fi
+    
+    if [ -f "$DATA_DIR/network_isolated.lock" ]; then
+        echo "   Network: ISOLATED"
+    else
+        echo "   Network: Normal"
+    fi
+    echo ""
+    
+    echo "═══════════════════════════════════════════════════════════"
+    echo ""
+}
+
 # ============================================================================
 # GELİŞMİŞ ÖZELLIKLER - SCHEDULED SCANS
 # ============================================================================
